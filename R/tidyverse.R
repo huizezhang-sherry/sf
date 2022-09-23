@@ -3,33 +3,6 @@
 #	 st_as_sf(NextMethod()) # nocov
 #}
 
-# This is currently only used in `bind_rows()` and `bind_cols()`
-# because sf overrides all default implementations
-#' @name tidyverse
-dplyr_reconstruct.sf = function(data, template) {
-	sfc_name = attr(template, "sf_column")
-	if (inherits(template, "tbl_df"))
-		data = dplyr::as_tibble(data)
-	# Return a bare data frame is the geometry column is no longer there
-	if (!sfc_name %in% names(data))
-		return(data)
-	prec = st_precision(template)
-	crs = st_crs(template)
-	st_as_sf(
-		data,
-		sf_column_name = sfc_name,
-		crs = crs,
-		precision = prec
-	)
-}
-
-group_split.sf <- function(.tbl, ..., .keep = TRUE) {
-	 class(.tbl) = setdiff(class(.tbl), "sf")
-     lapply(dplyr::group_split(.tbl, ..., .keep = .keep), st_as_sf)
-}
-
-#' Tidyverse methods for sf objects (remove .sf suffix!)
-#'
 #' Tidyverse methods for sf objects. Geometries are sticky, use \link{as.data.frame} to let \code{dplyr}'s own methods drop them. Use these methods without the .sf suffix and after loading the tidyverse package with the generic (or after loading package tidyverse).
 #' @param .data data object of class \link{sf}
 #' @param .dots see corresponding function in package \code{dplyr}
@@ -45,27 +18,62 @@ group_split.sf <- function(.tbl, ..., .keep = TRUE) {
 #'  title("the ten counties with smallest area")
 #'  nc2 <- nc %>% mutate(area10 = AREA/10)
 #'  nc %>% slice(1:2)
+#'  nc2 <- nc %>% mutate(area10 = AREA/10)
+#'  nc %>% slice(1:2)
 #' }
-filter.sf <- function(.data, ..., .dots) {
-	agr = st_agr(.data)
-	class(.data) <- setdiff(class(.data), "sf")
-	.re_sf(NextMethod(), sf_column_name = attr(.data, "sf_column"), agr)
+#' @export
+dplyr_col_modify.sf <- function(data, cols){
+	x = NextMethod()
+	dplyr_reconstruct.sf(x, data)
 }
 
+#' @export
 #' @name tidyverse
-#' @examples
-#' # plot 10 smallest counties in grey:
-#' if (require(dplyr, quietly = TRUE)) {
-#'  st_geometry(nc) %>% plot()
-#'  nc %>% select(AREA) %>% arrange(AREA) %>% slice(1:10) %>% plot(add = TRUE, col = 'grey')
-#'  title("the ten counties with smallest area")
-#' }
-arrange.sf <- function(.data, ..., .dots) {
-	sf_column_name = attr(.data, "sf_column")
-	class(.data) = setdiff(class(.data), "sf")
-	st_as_sf(NextMethod(), sf_column_name = sf_column_name)
+dplyr_row_slice.sf <- function(data, i, ...){
+	x = NextMethod()	
+	dplyr_reconstruct.sf(x, data)
 }
 
+# This is currently only used in `bind_rows()` and `bind_cols()`
+# because sf overrides all default implementations
+#' @export
+#' @name tidyverse
+dplyr_reconstruct.sf = function(data, template) {
+	sfc_name = attr(template, "sf_column")
+	# remove classes before `sf` as suggested by https://github.com/r-spatial/sf/issues/1958#issuecomment-1184429828
+	tcls = class(template)
+	strt = which(tcls == "sf") + 1 
+	end = length(tcls)
+	class(data) = tcls[strt: end]
+	
+	# Return a bare data frame is the geometry column is no longer there or invalid:
+	if (!sfc_name %in% names(data) || !inherits(data[[sfc_name]], "sfc"))
+		data
+	else {
+		prec = st_precision(template)
+		crs = st_crs(template)
+		agr = if (!is.null(agr <- attr(data, "agr")) && is.factor(agr)) {
+			att = names(data)[!sapply(data, inherits, what = "sfc")] # non-sfc columns
+			setNames(agr[att], att) # NA's new columns
+		} else
+			NA_agr_
+		
+		st_as_sf(
+			data,
+			sf_column_name = sfc_name,
+			crs = crs,
+			precision = prec,
+			agr = agr
+		)
+	}
+}
+
+group_split.sf <- function(.tbl, ..., .keep = TRUE) {
+	 class(.tbl) = setdiff(class(.tbl), "sf")
+     lapply(dplyr::group_split(.tbl, ..., .keep = .keep), st_as_sf)
+}
+
+#' Tidyverse methods for sf objects (remove .sf suffix!)
 #' @name tidyverse
 #' @param add see corresponding function in dplyr
 #' @examples
@@ -107,20 +115,6 @@ rowwise.sf <- function(x, ...) {
 		agr = agr,
 		class = c("sf", class(x)))
 }
-
-#' @name tidyverse
-#' @examples
-#' if (require(dplyr, quietly = TRUE)) {
-#'  nc2 <- nc %>% mutate(area10 = AREA/10)
-#' }
-mutate.sf <- function(.data, ..., .dots) {
-	#st_as_sf(NextMethod(), sf_column_name = attr(.data, "sf_column"))
-	agr = st_agr(.data)
-	sf_column_name = attr(.data, "sf_column")
-	class(.data) <- setdiff(class(.data), "sf")
-	.re_sf(NextMethod(), sf_column_name = sf_column_name, agr)
-}
-
 
 #' @name tidyverse
 #' @examples
@@ -228,19 +222,7 @@ rename.sf <- function(.data, ...) {
 }
 
 #' @name tidyverse
-#' @examples
-#' if (require(dplyr, quietly = TRUE)) {
-#'  nc %>% slice(1:2)
-#' }
-slice.sf <- function(.data, ..., .dots) {
-	class(.data) <- setdiff(class(.data), "sf")
-	sf_column <- attr(.data, "sf_column")
-	st_as_sf(NextMethod(), sf_column_name = sf_column)
-}
-
-
-#' @name tidyverse
-#' @aliases summarise
+#' @param i see original function docs
 #' @param do_union logical; in case \code{summary} does not create a geometry column, should geometries be created by unioning using \link{st_union}, or simply by combining using \link{st_combine}? Using \link{st_union} resolves internal boundaries, but in case of unioning points, this will likely change the order of the points; see Details.
 #' @param is_coverage logical; if \code{do_union} is \code{TRUE}, use an optimized algorithm for features that form a polygonal coverage (have no overlaps)
 #' @return an object of class \link{sf}
@@ -606,18 +588,17 @@ register_all_s3_methods = function() {
 		utils::packageVersion("dplyr") >= "0.8.99.9000"
 
 	if (has_dplyr_1.0)
-		register_s3_method("dplyr", "dplyr_reconstruct", "sf")
+	register_s3_method("dplyr", "dplyr_reconstruct", "sf")
+	register_s3_method("dplyr", "dplyr_row_slice", "sf")
+	register_s3_method("dplyr", "dplyr_col_modify", "sf")
 	register_s3_method("dplyr", "anti_join", "sf")
-	register_s3_method("dplyr", "arrange", "sf")
 	register_s3_method("dplyr", "distinct", "sf")
-	register_s3_method("dplyr", "filter", "sf")
 	register_s3_method("dplyr", "full_join", "sf")
 	register_s3_method("dplyr", "group_by", "sf")
 #	register_s3_method("dplyr", "group_map", "sf")
 	register_s3_method("dplyr", "group_split", "sf")
 	register_s3_method("dplyr", "inner_join", "sf")
 	register_s3_method("dplyr", "left_join", "sf")
-	register_s3_method("dplyr", "mutate", "sf")
 	register_s3_method("dplyr", "rename", "sf")
 	register_s3_method("dplyr", "right_join", "sf")
 	register_s3_method("dplyr", "rowwise", "sf")
@@ -625,7 +606,6 @@ register_all_s3_methods = function() {
 	register_s3_method("dplyr", "sample_n", "sf")
 	register_s3_method("dplyr", "select", "sf")
 	register_s3_method("dplyr", "semi_join", "sf")
-	register_s3_method("dplyr", "slice", "sf")
 	register_s3_method("dplyr", "summarise", "sf")
 	register_s3_method("dplyr", "transmute", "sf")
 	register_s3_method("dplyr", "ungroup", "sf")
